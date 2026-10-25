@@ -9,3 +9,4 @@ export async function buildPhonesWorkbook(phones: string[]): Promise<Buffer> {
   for (const phone of phones) ws.addRow({ phone });
   return Buffer.from(await wb.xlsx.writeBuffer());
 }
+   
