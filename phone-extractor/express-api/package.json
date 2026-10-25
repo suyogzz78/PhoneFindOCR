@@ -1,0 +1,24 @@
+{
+  "name": "phone-extract-module",
+  "version": "0.2.0",
+  "private": true,
+  "description": "Express (TypeScript) module that talks to the OCR FastAPI service. Copy src/phoneExtract into your app.",
+  "scripts": {
+    "dev": "tsx watch src/demoServer.ts",
+    "start": "tsx src/demoServer.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "engines": { "node": ">=18" },
+  "dependencies": {
+    "exceljs": "^4.4.0",
+    "express": "^4.21.0",
+    "multer": "^1.4.5-lts.1"
+  },
+  "devDependencies": {
+    "@types/express": "^4.17.21",
+    "@types/multer": "^1.4.12",
+    "@types/node": "^22.0.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.0"
+  }
+}

@@ -1,15 +1,16 @@
 
 import logging
+import threading
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from typing import Literal
 
-from fastapi import FastAPI, HTTPException, Request, UploadFile
+from fastapi import FastAPI, Header, HTTPException, Request, UploadFile
 from pydantic import BaseModel
 
 from .config import Settings
-from .jobs import Job, JobStore, run_job
-from .ocr import load_engine
+from .jobs import Job, JobStore, RedisJobStore, run_job
+from .ocr import OcrEngine, load_engine
 from .processing import UploadError, inspect_upload
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -53,19 +54,32 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         log.info("Loading OCR engine (%s)", "STUB" if settings.use_stub else "IndicOCR")
         app.state.settings = settings
         app.state.engine = load_engine(settings)
-        app.state.jobs = JobStore(settings.job_ttl_seconds)
+        app.state.jobs = (
+            RedisJobStore(settings.redis_url, settings.job_ttl_seconds)
+            if settings.redis_url
+            else JobStore(settings.job_ttl_seconds)
+        )
         app.state.executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="ocr")
+        app.state.stop_event = threading.Event()
+        if settings.redis_url:
+            app.state.executor.submit(redis_worker, app.state.jobs, app.state.engine, settings, app.state.stop_event)
         log.info("Ready.")
         
         #use of yield here as it marks a boundary between the setup and teardown phases of the lifespan context manager. The code before yield is executed when the application starts up, and the code after yield is executed when the application is shutting down. This allows for proper resource management, such as cleaning up threads or closing connections when the application is stopped.
         yield
+        app.state.stop_event.set()
         app.state.executor.shutdown(wait=False, cancel_futures=True)
 
     app = FastAPI(title="OCR Service", lifespan=lifespan)
 # this creates fastapi initialized app and connects it to the start/shutdown function
+    def require_internal_token(token: str | None) -> None:
+        if settings.internal_token and token != settings.internal_token:
+            raise HTTPException(401, "Unauthorized")
+
     @app.get("/health")
-    def health(request: Request):
+    def health(request: Request, x_ocr_token: str | None = Header(default=None)):
         st = request.app.state
+        require_internal_token(x_ocr_token)
         return {
             "status": "ok",
             "model_loaded": hasattr(st, "engine"),
@@ -75,8 +89,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
    
     @app.post("/jobs", response_model=JobOut, status_code=202)
-    def create_job(request: Request, file: UploadFile):
+    def create_job(
+        request: Request,
+        file: UploadFile,
+        x_ocr_token: str | None = Header(default=None),
+    ):
         st = request.app.state
+        require_internal_token(x_ocr_token)
         st.jobs.purge() # we remove the expired jobs from the job store to free up the memory so it doesnt grow forever.
         
         
@@ -96,11 +115,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise HTTPException(400, str(e))
 
         job = st.jobs.create(file.filename or "upload", info.pages)
-        st.executor.submit(run_job, job, content, info, st.engine, settings)
+        if settings.redis_url:
+            st.jobs.enqueue(job, content, info)
+        else:
+            st.executor.submit(run_job, job, content, info, st.engine, settings, st.jobs.save)
         return to_out(job)
 
     @app.get("/jobs/{job_id}", response_model=JobOut)
-    def get_job(job_id: str, request: Request):
+    def get_job(
+        job_id: str,
+        request: Request,
+        x_ocr_token: str | None = Header(default=None),
+    ):
+        require_internal_token(x_ocr_token)
         job = request.app.state.jobs.get(job_id)
         if job is None:
             raise HTTPException(404, "Job not found ")
@@ -110,3 +137,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
 
 app = create_app()
+
+
+def redis_worker(
+    store: RedisJobStore,
+    engine: OcrEngine,
+    settings: Settings,
+    stop_event: threading.Event,
+) -> None:
+    while not stop_event.is_set():
+        claimed = store.claim(timeout=1)
+        if claimed is None:
+            continue
+        job, content, info = claimed
+        run_job(job, content, info, engine, settings, store.save)
+        store.close_job_data(job.id)

@@ -7,7 +7,6 @@ PHONE = re.compile(r"(?<!\d)(?:\+?(?:91|977)[\s-]?|0)?(\d(?:[\s-]?\d){9})(?!\d)"
 
 
 def extract_phones(text: str) -> list[str]:
-    """Return unique mobile numbers (10 digits, starting 6-9) in order of appearance."""
     found: list[str] = []
     seen: set[str] = set()
     for m in PHONE.finditer(text):
@@ -17,3 +16,6 @@ def extract_phones(text: str) -> list[str]:
             seen.add(num)
             found.append(num)
     return found
+
+
+#limit is 50 mb

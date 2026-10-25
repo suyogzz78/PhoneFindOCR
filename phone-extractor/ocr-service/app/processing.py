@@ -48,7 +48,7 @@ def inspect_upload(content: bytes, settings: Settings) -> Inspected:
         finally:
             pdf.close()
         if pages == 0:
-            raise UploadError("The PDF has no pages")
+            raise UploadError("The PDF has no pages           ")
         if pages > settings.max_pages:
             raise UploadError(f"PDF has {pages} pages, maximum allowed is {settings.max_pages}")
         return Inspected("pdf", pages)
@@ -122,17 +122,20 @@ def extract(
                     digital_text = ""
                 # Keep embedded text, but do not treat it as complete: mixed PDFs can
                 # have a partial text layer over scanned content.
-                add(extract_phones(digital_text))
-                img = _prepare_image(
-                    page.render(scale=settings.pdf_render_scale).to_pil(),
-                    settings.max_image_dim,
-                )
-                # OCR every page to recover numbers absent from a partial text layer.
-                # Overlapping strips avoid the recognizer's full-page output limit.
-                for band in _page_bands(
-                    img, settings.pdf_ocr_bands, settings.pdf_ocr_band_overlap
-                ):
-                    add(extract_phones(engine.read_text(band)))
+                digital_phones = extract_phones(digital_text)
+                add(digital_phones)
+                # A usable text layer is the reliable fast path. If it contains
+                # no mobile number, render and OCR the page as a scanned/mixed PDF.
+                if not digital_phones:
+                    img = _prepare_image(
+                        page.render(scale=settings.pdf_render_scale).to_pil(),
+                        settings.max_image_dim,
+                    )
+                    # Overlapping strips avoid the recognizer's full-page output limit.
+                    for band in _page_bands(
+                        img, settings.pdf_ocr_bands, settings.pdf_ocr_band_overlap
+                    ):
+                        add(extract_phones(engine.read_text(band)))
             except Exception:
                 # One bad page should not throw away the other 49.
                 log.exception("page %d failed", i + 1)

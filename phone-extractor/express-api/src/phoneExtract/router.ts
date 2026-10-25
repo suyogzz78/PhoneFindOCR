@@ -42,7 +42,6 @@ function safeDownloadName(original: string): string {
 export function createPhoneExtractRouter(): Router {
   const router = Router();
 
-  // 1) Upload a file -> returns immediately with a jobId (OCR runs in the background).
   router.post('/jobs', upload.single('file'), async (req, res, next) => {
     try {
       if (!req.file) throw new OcrServiceError('Please choose a file to upload.', 400);
@@ -62,7 +61,8 @@ export function createPhoneExtractRouter(): Router {
     }
   });
 
-  // 3) Download the Excel file (only when the job is done).
+  //the download endpoint is used to download the excel file containing the extrracted phone numbers
+
   router.get('/jobs/:id/download', async (req, res, next) => {
     try {
       const job = await getJob(validJobId(req.params.id));
