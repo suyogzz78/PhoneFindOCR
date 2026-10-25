@@ -1,9 +1,11 @@
 
 import logging
+import json
 import threading
 import time
 import uuid
 from dataclasses import dataclass, field
+from typing import Callable
 
 from .config import Settings
 from .ocr import OcrEngine
@@ -45,11 +47,13 @@ class Job:
 
 
 class JobStore:
+#constructor fo the Jobstore class, it initializes the job store with a time-to-live (TTL) value in seconds. It also creates an empty dictionary to hold the jobs and a lock to ensure thread safety when accessing the job store.
     def __init__(self, ttl_seconds: int):
         self._jobs: dict[str, Job] = {}
         self._lock = threading.Lock()
         self._ttl = ttl_seconds
 
+#create method 
     def create(self, filename: str, total_pages: int) -> Job:
         job = Job(id=uuid.uuid4().hex, filename=filename, total_pages=total_pages)
         with self._lock:
@@ -72,15 +76,104 @@ class JobStore:
             ]:
                 del self._jobs[jid]
 
+    def save(self, job: Job) -> None:
+        """Compatibility hook for durable stores."""
 
-def run_job(job: Job, content: bytes, info: Inspected, engine: OcrEngine, settings: Settings) -> None:
+    def enqueue(self, job: Job, content: bytes, info: Inspected) -> None:
+        raise NotImplementedError
+
+
+class RedisJobStore:
+    """Durable FIFO queue and job state shared by API/worker processes."""
+
+    def __init__(self, url: str, ttl_seconds: int):
+        try:
+            import redis
+        except ImportError as exc:
+            raise RuntimeError("REDIS_URL is configured but the redis package is missing") from exc
+        self._redis = redis.Redis.from_url(url, decode_responses=False)
+        self._ttl = ttl_seconds
+        self._prefix = "phone-extractor:"
+        self._queue = self._prefix + "queue"
+        self._active = self._prefix + "active"
+        self._redis.ping()
+
+    def _key(self, job_id: str) -> str:
+        return self._prefix + "job:" + job_id
+
+    def _decode(self, raw: bytes) -> Job:
+        data = json.loads(raw)
+        return Job(**data)
+
+    def create(self, filename: str, total_pages: int) -> Job:
+        job = Job(id=uuid.uuid4().hex, filename=filename, total_pages=total_pages)
+        self._redis.set(self._key(job.id), json.dumps(job.__dict__), ex=self._ttl)
+        self._redis.sadd(self._active, job.id)
+        return job
+
+    def get(self, job_id: str) -> Job | None:
+        raw = self._redis.get(self._key(job_id))
+        return self._decode(raw) if raw else None
+
+    def save(self, job: Job) -> None:
+        self._redis.set(self._key(job.id), json.dumps(job.__dict__), ex=self._ttl)
+        if not job.active:
+            self._redis.srem(self._active, job.id)
+
+    def active_count(self) -> int:
+        return int(self._redis.scard(self._active))
+
+    def purge(self) -> None:
+        # Expiration is handled by Redis; this is intentionally a no-op.
+        pass
+
+    def enqueue(self, job: Job, content: bytes, info: Inspected) -> None:
+        payload = json.dumps({"pages": info.pages, "kind": info.kind})
+        pipe = self._redis.pipeline()
+        pipe.set(self._prefix + "content:" + job.id, content, ex=self._ttl)
+        pipe.set(self._prefix + "info:" + job.id, payload, ex=self._ttl)
+        pipe.rpush(self._queue, job.id)
+        pipe.execute()
+
+    def claim(self, timeout: int = 1) -> tuple[Job, bytes, Inspected] | None:
+        item = self._redis.blpop(self._queue, timeout=timeout)
+        if not item:
+            return None
+        job_id = item[1].decode()
+        job = self.get(job_id)
+        content = self._redis.get(self._prefix + "content:" + job_id)
+        raw_info = self._redis.get(self._prefix + "info:" + job_id)
+        if job is None or content is None or raw_info is None:
+            log.error("Redis queue item %s is incomplete", job_id)
+            return None
+        info_data = json.loads(raw_info)
+        return job, content, Inspected(info_data["kind"], info_data["pages"])
+
+    def close_job_data(self, job_id: str) -> None:
+        self._redis.delete(
+            self._prefix + "content:" + job_id,
+            self._prefix + "info:" + job_id,
+        )
+
+
+def run_job(
+    job: Job,
+    content: bytes,
+    info: Inspected,
+    engine: OcrEngine,
+    settings: Settings,
+    save: Callable[[Job], None] | None = None,
+) -> None:
+    save = save or (lambda _job: None)
 
     job.status = "processing"
+    save(job)
     log.info("job %s started: %s (%d page(s))", job.id, job.filename, job.total_pages)
 
     def on_progress(done: int, total: int, found: int) -> None:
         job.pages_done = done
         job.phones_found = found
+        save(job)
 
     try:
         result = extract(content, info, engine, settings, on_progress)
@@ -88,10 +181,13 @@ def run_job(job: Job, content: bytes, info: Inspected, engine: OcrEngine, settin
         job.phones_found = len(result.phones)
         job.failed_pages = result.failed_pages
         job.status = "done"
+        save(job)
         log.info("job %s done: %d number(s)", job.id, len(result.phones))
     except Exception:
         log.exception("job %s failed", job.id)
         job.error = "Could not read this file. It may be damaged or unreadable."
         job.status = "failed"
+        save(job)
     finally:
         job.finished_at = time.time()
+        save(job)
