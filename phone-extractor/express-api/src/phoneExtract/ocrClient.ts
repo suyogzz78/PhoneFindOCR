@@ -29,8 +29,13 @@ export class OcrServiceError extends Error {
 async function call(path: string, init: RequestInit = {}): Promise<OcrJob> {
   let res: Response;
   try {
+    const headers = new Headers(init.headers);
+    if (phoneExtractConfig.internalToken) {
+      headers.set('X-OCR-Token', phoneExtractConfig.internalToken);
+    }
     res = await fetch(`${phoneExtractConfig.ocrServiceUrl}${path}`, {
       ...init,
+      headers,
       signal: AbortSignal.timeout(phoneExtractConfig.requestTimeoutMs),
     });
   } catch (err) {
