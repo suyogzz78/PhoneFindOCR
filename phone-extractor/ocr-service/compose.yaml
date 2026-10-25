@@ -1,0 +1,21 @@
+services:
+  redis:
+    image: redis:7-alpine
+    container_name: phone-extractor-redis
+    restart: unless-stopped
+    command:
+      - redis-server
+      - --appendonly
+      - "yes"
+      - --requirepass
+      - ${REDIS_PASSWORD:?Set REDIS_PASSWORD before starting Compose}
+    
+    ports:
+      - "127.0.0.1:6380:6379"
+    
+    volumes:
+      - phone-extractor-redis-data:/data
+
+volumes:
+  phone-extractor-redis-data:
+    name: phone-extractor-redis-data
