@@ -34,9 +34,9 @@ function toClient(job: OcrJob) {
   };
 }
 
-function safeDownloadName(original: string): string {
+function safeDownloadName(original: string, incomplete: boolean): string {
   const stem = path.parse(original).name.replace(/[^\w.-]+/g, '_').replace(/^_+|_+$/g, '');
-  return `${stem || 'phones'}_numbers.xlsx`;
+  return `${stem || 'phones'}_numbers${incomplete ? '_INCOMPLETE':''}.xlsx`;
 }
 
 export function createPhoneExtractRouter(): Router {
@@ -70,9 +70,10 @@ export function createPhoneExtractRouter(): Router {
       if (job.status !== 'done' || !job.phones) {
         throw new OcrServiceError('The file is still being processed.', 409);
       }
+      const incomplete = job.failed_pages.length > 0;
       const xlsx = await buildPhonesWorkbook(job.phones);
       res.setHeader('Content-Type', XLSX_MIME);
-      res.setHeader('Content-Disposition', `attachment; filename="${safeDownloadName(job.filename)}"`);
+      res.setHeader('Content-Disposition', `attachment; filename="${safeDownloadName(job.filename, incomplete)}"`);
       res.send(xlsx);
     } catch (err) {
       next(err);

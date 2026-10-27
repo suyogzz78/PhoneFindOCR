@@ -96,12 +96,13 @@ class RedisJobStore:
         self._prefix = "phone-extractor:"
         self._queue = self._prefix + "queue"
         self._active = self._prefix + "active"
+        self._processing = self._prefix + "processing"
         self._redis.ping()
 
     def _key(self, job_id: str) -> str:
         return self._prefix + "job:" + job_id
 
-    def _decode(self, raw: bytes) -> Job:
+    def _decode(self, raw: bytes | str) -> Job:
         data = json.loads(raw)
         return Job(**data)
 
@@ -121,7 +122,7 @@ class RedisJobStore:
             self._redis.srem(self._active, job.id)
 
     def active_count(self) -> int:
-        return int(self._redis.scard(self._active))
+        return self._redis.scard(self._active)
 
     def purge(self) -> None:
         # Expiration is handled by Redis; this is intentionally a no-op.
@@ -135,25 +136,46 @@ class RedisJobStore:
         pipe.rpush(self._queue, job.id)
         pipe.execute()
 
+    def requeue_unfinished(self)->None:
+
+        while self._redis.lmove(self._processing,self._queue,"RIGHT","LEFT"):
+            pass
+
     def claim(self, timeout: int = 1) -> tuple[Job, bytes, Inspected] | None:
-        item = self._redis.blpop(self._queue, timeout=timeout)
+        item = self._redis.blmove(self._queue, self._processing, timeout, "LEFT","RIGHT")
         if not item:
             return None
-        job_id = item[1].decode()
+        job_id = item.decode() if isinstance(item, bytes) else item
         job = self.get(job_id)
         content = self._redis.get(self._prefix + "content:" + job_id)
         raw_info = self._redis.get(self._prefix + "info:" + job_id)
-        if job is None or content is None or raw_info is None:
+        if job is None or not isinstance(content, bytes) or raw_info is None:
             log.error("Redis queue item %s is incomplete", job_id)
+            self._abandon(job_id, job)
             return None
         info_data = json.loads(raw_info)
         return job, content, Inspected(info_data["kind"], info_data["pages"])
+
+
+
+    def _abandon(self, job_id:str , job:Job |None) ->None :
+        
+        if job is not None:
+            job.status ="failed"
+            job.error ="Processing interrupted. Please upload again"
+            job.finished_at= time.time()
+            self.save(job)
+        self._redis.srem(self._active,job_id)
+        self._redis.lrem(self._processing,1,job_id)
+
+
 
     def close_job_data(self, job_id: str) -> None:
         self._redis.delete(
             self._prefix + "content:" + job_id,
             self._prefix + "info:" + job_id,
         )
+        self._redis.lrem(self._processing,1 , job_id)
 
 
 def run_job(
