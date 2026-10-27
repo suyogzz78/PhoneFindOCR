@@ -145,10 +145,33 @@ def redis_worker(
     settings: Settings,
     stop_event: threading.Event,
 ) -> None:
+    # while not stop_event.is_set():
+    #     claimed = store.claim(timeout=1)
+    #     if claimed is None:
+    #         continue
+    #     job, content, info = claimed
+    #     run_job(job, content, info, engine, settings, store.save)
+    #     store.close_job_data(job.id)
+    store.requeue_unfinished()
     while not stop_event.is_set():
-        claimed = store.claim(timeout=1)
+        try:
+            claimed = store.claim(timeout=1)
+        
+        except Exception :
+            log.exception("Redis worker error")
+            stop_event.wait(2)
+            continue
         if claimed is None:
             continue
-        job, content, info = claimed
-        run_job(job, content, info, engine, settings, store.save)
-        store.close_job_data(job.id)
+        job,content ,info =claimed
+        
+        try:
+            run_job(job,content,info,engine,settings,store.save)
+            store.close_job_data(job.id)
+        
+        except Exception:
+            log.exception("job %s worker error", job.id)
+
+            
+
+
