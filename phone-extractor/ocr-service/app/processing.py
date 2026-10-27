@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from typing import Callable, Literal
 
 import pypdfium2 as pdfium
+import pypdfium2.raw as pdfium_c
 from PIL import Image, ImageOps
 
 from .config import Settings
@@ -126,7 +127,7 @@ def extract(
                 add(digital_phones)
                 # A usable text layer is the reliable fast path. If it contains
                 # no mobile number, render and OCR the page as a scanned/mixed PDF.
-                if not digital_phones:
+                if not digital_phones or any(page.get_objects(filter=[pdfium_c.FPDF_PAGEOBJ_IMAGE])):
                     img = _prepare_image(
                         page.render(scale=settings.pdf_render_scale).to_pil(),
                         settings.max_image_dim,
