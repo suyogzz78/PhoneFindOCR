@@ -23,6 +23,7 @@ class Job:
     pages_done: int = 0
     phones: list[str] = field(default_factory=list)
     phones_found: int = 0
+    incomplete_phones: list[str] = field(default_factory=list)
     failed_pages: list[int] = field(default_factory=list)
     error: str | None = None
     created_at: float = field(default_factory=time.time)
@@ -82,7 +83,8 @@ class JobStore:
     def enqueue(self, job: Job, content: bytes, info: Inspected) -> None:
         raise NotImplementedError
 
-
+"""Adding a retry logic such that the job is retried twice if it fails , and if it fails for the third time it is marked as failed,befroe this  one job could go in an inifinite loop of failing  """
+MAX_RETRIES = 2
 class RedisJobStore:
     """Durable FIFO queue and job state shared by API/worker processes."""
 
@@ -96,10 +98,11 @@ class RedisJobStore:
         self._prefix = "phone-extractor:"
         self._queue = self._prefix + "queue"
         self._active = self._prefix + "active"
+        #secondary
         self._processing = self._prefix + "processing"
         self._redis.ping()
 
-    def _key(self, job_id: str) -> str:
+    def _key(self, job_id: str) -> str:  
         return self._prefix + "job:" + job_id
 
     def _decode(self, raw: bytes | str) -> Job:
@@ -201,6 +204,7 @@ def run_job(
         result = extract(content, info, engine, settings, on_progress)
         job.phones = result.phones
         job.phones_found = len(result.phones)
+        job.incomplete_phones = result.incomplete_phones
         job.failed_pages = result.failed_pages
         job.status = "done"
         save(job)
