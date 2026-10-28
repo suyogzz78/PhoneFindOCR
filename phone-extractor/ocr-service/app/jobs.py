@@ -141,9 +141,16 @@ class RedisJobStore:
 
     def requeue_unfinished(self)->None:
 
-        while self._redis.lmove(self._processing,self._queue,"RIGHT","LEFT"):
-            pass
-
+        while  (raw :=self._redis.lmove(self._processing,self._queue,"RIGHT","LEFT")) is not None:
+            job_id = raw.decode() if isinstance(raw, bytes) else raw
+            key = self._prefix + "crashes :" + job_id
+            crashes = self._redis.incr(key)
+            self._redis.expire(key, self._ttl)
+            if crashes > MAX_RETRIES:
+                self._redis.lrem(self._queue, 1, job_id)
+                self._abandon(job_id, self.get(job_id))
+                self.close_job_data(job_id)
+            
     def claim(self, timeout: int = 1) -> tuple[Job, bytes, Inspected] | None:
         item = self._redis.blmove(self._queue, self._processing, timeout, "LEFT","RIGHT")
         if not item:
@@ -161,11 +168,12 @@ class RedisJobStore:
 
 
 
-    def _abandon(self, job_id:str , job:Job |None) ->None :
+
+    def _abandon(self, job_id:str , job:Job |None, reason: str ="Processing interrupted. Please upload again") ->None :
         
         if job is not None:
             job.status ="failed"
-            job.error ="Processing interrupted. Please upload again"
+            job.error = reason
             job.finished_at= time.time()
             self.save(job)
         self._redis.srem(self._active,job_id)
