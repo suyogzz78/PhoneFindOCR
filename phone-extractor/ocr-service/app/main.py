@@ -26,6 +26,7 @@ class JobOut(BaseModel):
     percent: int
     phones_found: int
     phones: list[str] | None  # only show the extracted phone numbers if the job is done completely
+    incomplete_phones: list[str] | None = None
     failed_pages: list[int]  # pages that could not be read (result may be partial)
     error: str | None
 
@@ -40,6 +41,7 @@ def to_out(job: Job) -> JobOut:
         percent=job.percent,
         phones_found=job.phones_found,
         phones=job.phones if job.status == "done" else None,
+        incomplete_phones=getattr(job, "incomplete_phones", []) if job.status == "done" else None,
         failed_pages=job.failed_pages,
         error=job.error,
     )
@@ -97,8 +99,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         st = request.app.state
         require_internal_token(x_ocr_token)
         st.jobs.purge() # we remove the expired jobs from the job store to free up the memory so it doesnt grow forever.
-        
-        
+
 
         if st.jobs.active_count() >= settings.max_queued_jobs:
             raise HTTPException(429, "The OCR queue is full. Please try again in a few minutes.")
@@ -163,7 +164,7 @@ def redis_worker(
             continue
         if claimed is None:
             continue
-        job,content ,info =claimed
+        job,content ,info = claimed
         
         try:
             run_job(job,content,info,engine,settings,store.save)
