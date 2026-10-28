@@ -14,6 +14,7 @@ export interface OcrJob {
   percent: number;
   phones_found: number;
   phones: string[] | null;
+  incomplete_phones?: string[] | null;
   failed_pages: number[];
   error: string | null;
 }

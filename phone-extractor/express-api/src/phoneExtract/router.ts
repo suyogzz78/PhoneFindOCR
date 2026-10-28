@@ -29,14 +29,27 @@ function toClient(job: OcrJob) {
     totalPages: job.total_pages,
     phonesFound: job.phones_found,
     phones: job.phones, // null until status === 'done'
+    incompletePhones: job.incomplete_phones ?? [],
     failedPages: job.failed_pages, // non-empty => result is partial
     error: job.error,
   };
 }
 
-function safeDownloadName(original: string, incomplete: boolean): string {
+function safeDownloadName(
+  original: string,
+  hasFailedPages: boolean,
+  hasIncompletePhones: boolean,
+): string {
   const stem = path.parse(original).name.replace(/[^\w.-]+/g, '_').replace(/^_+|_+$/g, '');
-  return `${stem || 'phones'}_numbers${incomplete ? '_INCOMPLETE':''}.xlsx`;
+  let suffix = '';
+  if (hasFailedPages && hasIncompletePhones) {
+    suffix = '_PARTIAL_REVIEW';
+  } else if (hasFailedPages) {
+    suffix = '_PARTIAL';
+  } else if (hasIncompletePhones) {
+    suffix = '_REVIEW';
+  }
+  return `${stem || 'phones'}_numbers${suffix}.xlsx`;
 }
 
 export function createPhoneExtractRouter(): Router {
@@ -70,10 +83,15 @@ export function createPhoneExtractRouter(): Router {
       if (job.status !== 'done' || !job.phones) {
         throw new OcrServiceError('The file is still being processed.', 409);
       }
-      const incomplete = job.failed_pages.length > 0;
-      const xlsx = await buildPhonesWorkbook(job.phones);
+      const incompletePhones = job.incomplete_phones ?? [];
+      const hasFailedPages = job.failed_pages.length > 0;
+      const hasIncompletePhones = incompletePhones.length > 0;
+      const xlsx = await buildPhonesWorkbook(job.phones, job.failed_pages, incompletePhones);
       res.setHeader('Content-Type', XLSX_MIME);
-      res.setHeader('Content-Disposition', `attachment; filename="${safeDownloadName(job.filename, incomplete)}"`);
+      res.setHeader(
+        'Content-Disposition',
+        `attachment; filename="${safeDownloadName(job.filename, hasFailedPages, hasIncompletePhones)}"`,
+      );
       res.send(xlsx);
     } catch (err) {
       next(err);
