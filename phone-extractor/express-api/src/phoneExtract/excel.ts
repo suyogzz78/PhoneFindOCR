@@ -4,12 +4,20 @@ import ExcelJS from 'exceljs';
 export async function buildPhonesWorkbook(
   phones: string[],
   failedPages: number[] = [],
+  incompletePhones: string[] = [],
 ): Promise<Buffer> {
   const wb = new ExcelJS.Workbook();
   const ws = wb.addWorksheet('Phones');
   ws.columns = [{ header: 'Phone', key: 'phone', width: 18, style: { numFmt: '@' } }];
   ws.getRow(1).font = { bold: true };
   for (const phone of phones) ws.addRow({ phone });
+
+  if (incompletePhones.length > 0) {
+    const incWs = wb.addWorksheet('Incomplete Numbers');
+    incWs.columns = [{ header: 'Incomplete Phone (Review Needed)', key: 'phone', width: 32, style: { numFmt: '@' } }];
+    incWs.getRow(1).font = { bold: true, color: { argb: 'FFFF8C00' } };
+    for (const phone of incompletePhones) incWs.addRow({ phone });
+  }
 
   if (failedPages.length > 0) {
     const notes = wb.addWorksheet('Notes');
