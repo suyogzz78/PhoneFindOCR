@@ -1,7 +1,7 @@
 """Turn an uploaded PDF/image into a list of phone numbers."""
 import io
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Callable, Literal
 
 import pypdfium2 as pdfium
@@ -10,7 +10,7 @@ from PIL import Image, ImageOps
 
 from .config import Settings
 from .ocr import OcrEngine
-from .phones import extract_phones
+from .phones import extract_incomplete_phones, extract_phones
 
 log = logging.getLogger("ocr.processing")
 
@@ -32,6 +32,8 @@ class Inspected:
 class ExtractResult:
     phones: list[str]
     failed_pages: list[int]
+    incomplete_phones: list[str] = field(default_factory=list)
+
 
 
 def inspect_upload(content: bytes, settings: Settings) -> Inspected:
@@ -95,20 +97,27 @@ def extract(
 ) -> ExtractResult:
     phones: list[str] = []
     seen: set[str] = set()
+    incomplete_phones: list[str] = []
+    seen_incomplete: set[str] = set()
     failed_pages: list[int] = []
 
-    def add(new: list[str]) -> None:
-        for p in new:
+    def add_from_text(raw_text: str) -> None:
+        for p in extract_phones(raw_text):
             if p not in seen:
                 seen.add(p)
                 phones.append(p)
+        for p in extract_incomplete_phones(raw_text, phones):
+            if p not in seen and p not in seen_incomplete:
+                seen_incomplete.add(p)
+                incomplete_phones.append(p)
 
     if info.kind == "image":
         with Image.open(io.BytesIO(content)) as raw:
             img = _prepare_image(raw, settings.max_image_dim)
-        add(extract_phones(engine.read_text(img)))
+        add_from_text(engine.read_text(img))
         on_progress(1, 1, len(phones))
-        return ExtractResult(phones, failed_pages)
+        final_incomplete = [p for p in incomplete_phones if p not in seen]
+        return ExtractResult(phones, failed_pages, final_incomplete)
 
     pdf = pdfium.PdfDocument(content)
     try:
@@ -124,7 +133,7 @@ def extract(
                 # Keep embedded text, but do not treat it as complete: mixed PDFs can
                 # have a partial text layer over scanned content.
                 digital_phones = extract_phones(digital_text)
-                add(digital_phones)
+                add_from_text(digital_text)
                 # A usable text layer is the reliable fast path. If it contains
                 # no mobile number, render and OCR the page as a scanned/mixed PDF.
                 if not digital_phones or any(page.get_objects(filter=[pdfium_c.FPDF_PAGEOBJ_IMAGE])):
@@ -136,7 +145,7 @@ def extract(
                     for band in _page_bands(
                         img, settings.pdf_ocr_bands, settings.pdf_ocr_band_overlap
                     ):
-                        add(extract_phones(engine.read_text(band)))
+                        add_from_text(engine.read_text(band))
             except Exception:
                 # One bad page should not throw away the other 49.
                 log.exception("page %d failed", i + 1)
@@ -149,4 +158,5 @@ def extract(
 
     if len(failed_pages) == total:
         raise RuntimeError("Could not process any page of the PDF")
-    return ExtractResult(phones, failed_pages)
+    final_incomplete = [p for p in incomplete_phones if p not in seen]
+    return ExtractResult(phones, failed_pages, final_incomplete)
